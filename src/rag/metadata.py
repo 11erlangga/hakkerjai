@@ -37,13 +37,15 @@ def enrich_documents(documents: list[Document]) -> list[Document]:
         if uu_number is None:
             raise ValueError(
                 f"'{source_file}' tidak ada di FILENAME_TO_UU_NUMBER mapping. "
-                f"Cek nama file persis di PDF_DIR (sorted(Path(PDF_DIR).glob('*.pdf'))) "
-                f"atau update mapping di src/rag/metadata.py."
+                f"Cek nama file persis di PDF_DIR atau update mapping di src/rag/metadata.py."
             )
         doc.metadata["uu_number"] = uu_number
 
         matches = PASAL_PATTERN.findall(doc.page_content)
-        doc.metadata["pasal_refs"] = sorted(set(matches)) if matches else []
+        # Disimpan sebagai string comma-separated (bukan list) -- ChromaDB
+        # hanya terima metadata value scalar (str/int/float/bool/None),
+        # list akan raise ValueError saat ingest ke vectorstore.
+        doc.metadata["pasal_refs"] = ", ".join(sorted(set(matches))) if matches else ""
 
     return documents
 

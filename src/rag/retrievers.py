@@ -151,7 +151,7 @@ def print_retrieved_docs(docs: list[Document]) -> None:
         )
         print(
             f"UU/PP: {doc.metadata.get('uu_number', '?')}, "
-            f"Pasal terdeteksi: {doc.metadata.get('pasal_refs', []) or '(tidak ada)'}"
+            f"Pasal terdeteksi: {doc.metadata.get('pasal_refs') or '(tidak ada)'}"
         )
         print(doc.page_content)
         print()

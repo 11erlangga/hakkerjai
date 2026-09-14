@@ -335,11 +335,6 @@ def sanity_check_retrieval(retriever, query: str) -> None:
 
 
 def _format_source_line(doc: Document, index: int) -> str:
-    """
-    Helper terpisah supaya format sitasi per sumber gampang dibaca &
-    di-maintain -- menggantikan nested ternary di dalam generator
-    expression yang sebelumnya sulit ditelusuri urutan evaluasinya.
-    """
     if doc.metadata.get("source_type") == "web":
         return (
             f"{index}. [Web] {doc.metadata.get('title', '?')} "
@@ -353,7 +348,7 @@ def _format_source_line(doc: Document, index: int) -> str:
     if doc.metadata.get("page") is not None:
         line += f", halaman {doc.metadata['page']}"
     if doc.metadata.get("pasal_refs"):
-        line += f" — Pasal: {', '.join(doc.metadata['pasal_refs'])}"
+        line += f" — Pasal: {doc.metadata['pasal_refs']}"
     return line
 
 
