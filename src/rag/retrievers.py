@@ -124,21 +124,17 @@ def build_ensemble_retriever(
 
 def build_reranked_retriever(
     base_retriever,
-    reranker_model_name: str = RERANKER_MODEL_NAME,
+    reranker: HuggingFaceCrossEncoder,
     top_n: int = 3,
 ) -> ContextualCompressionRetriever:
     """
     Cross-encoder reranker: base_retriever (ensemble) ambil kandidat lebih
-    banyak dulu (k=10 per retriever di atas), reranker baca ulang tiap
-    kandidat BERSAMA query-nya (cross-attention, bukan cosine similarity
-    dua vektor terpisah kayak bi-encoder bge-m3) -- lebih akurat tapi lebih
-    lambat, makanya cuma dipakai untuk re-urutkan hasil yang sudah
-    di-narrow, bukan untuk search awal ke seluruh koleksi dokumen.
+    banyak dulu (k=10 per retriever), reranker baca ulang tiap kandidat
+    BERSAMA query-nya (cross-attention) -- lebih akurat tapi lebih lambat.
 
     top_n=3 sesuai contoh di brief ("Top-K (misal 3)").
     """
-    reranker_model = HuggingFaceCrossEncoder(model_name=reranker_model_name)
-    compressor = CrossEncoderReranker(model=reranker_model, top_n=top_n)
+    compressor = CrossEncoderReranker(model=reranker, top_n=top_n)
     return ContextualCompressionRetriever(
         base_compressor=compressor,
         base_retriever=base_retriever,
@@ -146,12 +142,77 @@ def build_reranked_retriever(
 
 
 def print_retrieved_docs(docs: list[Document]) -> None:
-    """Helper sanity-check: tampilkan chunk + sumber untuk inspeksi manual."""
+    """Helper sanity-check: tampilkan chunk + sumber (termasuk UU/pasal) untuk inspeksi manual."""
     for i, doc in enumerate(docs, start=1):
         print(f"--- Dokumen {i} ---")
         print(
             f"Sumber: {doc.metadata.get('source_file', '?')}, "
             f"halaman: {doc.metadata.get('page', '?')}"
         )
+        print(
+            f"UU/PP: {doc.metadata.get('uu_number', '?')}, "
+            f"Pasal terdeteksi: {doc.metadata.get('pasal_refs', []) or '(tidak ada)'}"
+        )
         print(doc.page_content)
         print()
+
+
+def build_reranker(
+    reranker_model_name: str = RERANKER_MODEL_NAME,
+) -> HuggingFaceCrossEncoder:
+    """
+    Load cross-encoder reranker SEKALI per sesi kernel. Reuse instance ini
+    di build_reranked_retriever() dan di rerank_with_scores() -- jangan
+    panggil ulang, supaya gak numpuk 2 instance model reranker di GPU
+    memory tanpa perlu.
+    """
+    return HuggingFaceCrossEncoder(model_name=reranker_model_name)
+
+
+def dedup_documents(doc_lists: list[list[Document]]) -> list[Document]:
+    """
+    Gabung beberapa list hasil retrieval jadi satu, dedup berdasar 100
+    karakter pertama page_content. Urutan diprioritaskan sesuai urutan
+    doc_lists yang dipassing (list pertama menang kalau ada duplikat).
+    """
+    seen = set()
+    combined: list[Document] = []
+    for docs in doc_lists:
+        for doc in docs:
+            key = doc.page_content[:100]
+            if key not in seen:
+                seen.add(key)
+                combined.append(doc)
+    return combined
+
+
+def rerank_with_scores(
+    reranker: HuggingFaceCrossEncoder,
+    query: str,
+    documents: list[Document],
+) -> list[tuple[Document, float]]:
+    """
+    Score tiap (query, doc) pair pakai cross-encoder secara manual (akses
+    .score() langsung, BUKAN lewat ContextualCompressionRetriever) --
+    supaya raw score-nya bisa diakses, bukan cuma urutan hasil compress.
+    Perlu untuk custom union (HyDE) dan nanti relevance score extraction
+    + threshold fallback DuckDuckGo (Advanced).
+
+    Return: list (Document, score) terurut score descending.
+    """
+    if not documents:
+        return []
+    pairs = [(query, doc.page_content) for doc in documents]
+    scores = reranker.score(pairs)
+    return sorted(zip(documents, scores), key=lambda pair: pair[1], reverse=True)
+
+
+def rerank_documents(
+    reranker: HuggingFaceCrossEncoder,
+    query: str,
+    documents: list[Document],
+    top_n: int = 3,
+) -> list[Document]:
+    """Convenience wrapper: rerank_with_scores() lalu ambil Top-N Document saja."""
+    ranked = rerank_with_scores(reranker, query, documents)
+    return [doc for doc, _ in ranked[:top_n]]

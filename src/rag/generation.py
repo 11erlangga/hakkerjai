@@ -97,23 +97,25 @@ def format_context(docs: list[Document]) -> str:
     Gabungkan Document hasil retrieval jadi satu string bersih untuk
     disisipkan ke prompt -- dengan label sumber per chunk.
 
-    FIX untuk bug di chain lama: sebelumnya {context} langsung diisi
-    list of Document mentah dari retriever (retriever dipasang langsung
-    sebagai value dict, bukan di-pipe lewat formatter) -- itu bikin prompt
-    berisi representasi Python object (termasuk noise metadata) alih-alih
-    teks bersih. Fungsi ini yang seharusnya berdiri di antara retriever dan
-    prompt template di dalam chain.
+    Branch untuk Document hasil web fallback (source_type="web") -- gak
+    punya uu_number/pasal_refs, jadi format sitasi-nya beda: judul + url,
+    bukan nomor UU/pasal.
 
-    Label sumber per chunk juga jadi fondasi untuk citation requirement
-    (Skilled) nanti -- model bisa "lihat" dari dokumen/halaman mana tiap
+    Label sumber per chunk jadi fondasi untuk citation requirement
+    (Skilled) -- model bisa "lihat" dari dokumen/halaman/UU mana tiap
     potongan konteks berasal, bukan cuma teks polos tanpa atribusi.
     """
     parts = []
     for doc in docs:
-        source = doc.metadata.get("source_file", "?")
-        page = doc.metadata.get("page", "?")
-        parts.append(f"[Sumber: {source}, halaman {page}]\n{doc.page_content}")
-    return "\n\n---\n\n".join(parts)
+        if doc.metadata.get("source_type") == "web":
+            header = f"[Sumber web: {doc.metadata.get('title', '?')} ({doc.metadata.get('url', '?')})]"
+        else:
+            header = (
+                f"[{doc.metadata.get('uu_number', '?')}, "
+                f"{doc.metadata.get('source_file', '?')}]"
+            )
+        parts.append(f"{header}\n{doc.page_content}")
+    return "\n\n".join(parts)
 
 
 def build_prompt_runnable(
