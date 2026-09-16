@@ -1,5 +1,13 @@
+"""
+hyde.py
+
+Utilitas HyDE (Hypothetical Document Embeddings) untuk query
+transformation pada pipeline RAG (Legal AI Assistant). Menghasilkan
+jawaban hipotesis dari LLM untuk dipakai sebagai query retrieval
+tambahan, alih-alih hanya query asli pengguna.
+"""
+
 import re
-from typing import Optional
 
 from langchain_core.documents import Document
 from langchain_huggingface import HuggingFacePipeline
@@ -20,10 +28,17 @@ HYDE_SYSTEM_PROMPT = (
 
 
 def _strip_think_block(text: str) -> str:
-    """
-    Buang blok <think>...</think> sebelum hypothesis dipakai untuk
-    retrieval embedding -- isi reasoning secara semantic beda dari jawaban
-    legal itu sendiri, berisiko men-dilute similarity ke chunk relevan.
+    """Membuang blok `<think>...</think>` dari hypothesis HyDE.
+
+    Isi reasoning secara semantik berbeda dari jawaban legal itu
+    sendiri, sehingga berisiko men-dilute similarity ke chunk yang
+    relevan apabila ikut dipakai untuk retrieval embedding.
+
+    Args:
+        text: Teks hypothesis mentah dari hasil generation.
+
+    Returns:
+        Teks tanpa blok `<think>...</think>`, sudah di-strip whitespace.
     """
     return THINK_BLOCK_PATTERN.sub("", text).strip()
 
@@ -33,15 +48,28 @@ def build_hyde_pipeline(
     max_new_tokens: int = 200,
     temperature: float = 0.9,
 ) -> HuggingFacePipeline:
-    """
-    Bikin pipeline generation KEDUA khusus HyDE, reuse model+tokenizer
-    PERSIS SAMA dari llm generator RAG utama (llm.pipeline.model/.tokenizer)
-    -- TIDAK load ulang dari HF Hub, NOL tambahan GPU memory.
+    """Membangun pipeline generation kedua khusus untuk HyDE.
 
-    max_new_tokens lebih pendek (200 vs 1000 di generator utama) dan
-    temperature lebih tinggi (0.9 vs 0.2) -- HyDE butuh hypothesis singkat
-    & bervariasi antar generation, beda kebutuhan dari jawaban final yang
-    harus presisi/conservative.
+    Me-reuse model dan tokenizer persis sama dari `llm` generator RAG
+    utama (`llm.pipeline.model` / `.tokenizer`) -- tidak memuat ulang
+    dari HF Hub, sehingga tidak menambah GPU memory sama sekali.
+
+    `max_new_tokens` dibuat lebih pendek (200, dibanding 1000 pada
+    generator utama) dan `temperature` lebih tinggi (0.9, dibanding
+    0.2) karena HyDE membutuhkan hypothesis yang singkat dan bervariasi
+    antar generation -- kebutuhan yang berbeda dari jawaban final yang
+    harus presisi dan konservatif.
+
+    Args:
+        llm: `HuggingFacePipeline` generator RAG utama, sumber model
+            dan tokenizer yang di-reuse.
+        max_new_tokens: Jumlah token maksimum untuk tiap hypothesis.
+        temperature: Temperature sampling, tinggi untuk variasi antar
+            hypothesis.
+
+    Returns:
+        `HuggingFacePipeline` baru yang berbagi model dan tokenizer
+        dengan `llm`, dengan konfigurasi generation terpisah.
     """
     base_pipeline = llm.pipeline
     hyde_hf_pipeline = hf_pipeline(
@@ -63,10 +91,41 @@ def generate_hypothetical_answers(
     tokenizer,
     n: int = 2,
 ) -> list[str]:
-    """
-    Generate n hypothetical answer untuk query (HyDE query transformation).
-    hyde_llm HARUS instance dari build_hyde_pipeline() -- reuse model yang
-    sama, BUKAN load model baru.
+    """Menghasilkan n jawaban hipotesis untuk query (HyDE query transformation).
+
+    `hyde_llm` harus berupa instance hasil `build_hyde_pipeline` --
+    me-reuse model yang sama dengan generator RAG utama, bukan memuat
+    model baru.
+
+    Known limitation: fungsi ini tidak melakukan filtering terhadap
+    hypothesis kosong. Apabila `_strip_think_block` menghasilkan string
+    kosong (misal model hanya mengeluarkan blok `<think>` tanpa jawaban
+    di luar itu), string kosong tersebut tetap dimasukkan ke list hasil
+    dan akan diteruskan sebagai query ke retriever oleh pemanggil
+    (`hyde_retrieve`) -- perilaku retriever untuk query kosong
+    bergantung pada backend yang dipakai (BM25/dense) dan tidak
+    dijamin konsisten. Secara praktis risiko ini kecil karena
+    `HYDE_SYSTEM_PROMPT` secara eksplisit meminta jawaban singkat namun
+    tetap berisi, bukan kosong.
+
+    Catatan performa: generation dilakukan `n` kali secara berurutan
+    lewat `hyde_llm.invoke()`, masing-masing memproses ulang prompt
+    dari awal tanpa berbagi komputasi antar call. Untuk `n` kecil
+    (sesuai kebutuhan HyDE pada umumnya, minimal 2) overhead ini
+    minor, namun akan semakin tidak efisien apabila `n` dinaikkan
+    signifikan -- pada kondisi tersebut, generation batched sekaligus
+    lebih disarankan dibanding loop ini.
+
+    Args:
+        query: Query asli dari pengguna.
+        hyde_llm: Pipeline HyDE hasil `build_hyde_pipeline`.
+        tokenizer: Tokenizer dengan chat template terpasang, dipakai
+            untuk membangun prompt HyDE.
+        n: Jumlah hypothesis yang dihasilkan.
+
+    Returns:
+        List string hypothesis sepanjang `n`, blok `<think>` sudah
+        dibuang dari masing-masing.
     """
     prompt = tokenizer.apply_chat_template(
         [
@@ -90,10 +149,23 @@ def hyde_retrieve(
     retriever,
     top_k: int = 10,
 ) -> list[Document]:
-    """
-    Untuk demonstrasi standalone di notebook (bukan dipakai internal
-    RAGPipeline, yang sudah handle union sendiri di _retrieve_with_hyde).
-    Retrieve pakai query asli + tiap hypothetical answer, union dedup.
+    """Melakukan retrieval gabungan query asli dan hypothesis HyDE.
+
+    Dipakai untuk demonstrasi standalone di notebook (bukan dipakai
+    secara internal oleh `RAGPipeline`, yang sudah menangani union
+    HyDE sendiri lewat `_retrieve_with_hyde`). Retrieval dilakukan
+    memakai query asli ditambah tiap hypothetical answer, hasilnya
+    di-union dan di-dedup.
+
+    Args:
+        query: Query asli dari pengguna.
+        hyde_answers: List hypothesis hasil `generate_hypothetical_answers`.
+        retriever: Retriever yang dipanggil untuk tiap query (query
+            asli maupun tiap hypothesis).
+        top_k: Jumlah dokumen maksimum yang dikembalikan setelah dedup.
+
+    Returns:
+        List `Document` hasil union dan dedup, dipotong sampai `top_k`.
     """
     doc_lists = [retriever.invoke(query)] + [
         retriever.invoke(ans) for ans in hyde_answers

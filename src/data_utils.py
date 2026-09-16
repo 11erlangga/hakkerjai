@@ -1,10 +1,10 @@
 """
 data_utils.py
 
-Utility untuk load dan format dataset Alpaca-GPT4-Indonesian menjadi
-format Chat Template (via tokenizer Unsloth), dipakai bareng di semua
-notebook eksperimen SFT supaya logic mapping-nya konsisten & gak
-copy-paste ulang tiap eksperimen.
+Utilitas untuk memuat dan memformat dataset Alpaca-GPT4-Indonesian ke
+format Chat Template (melalui tokenizer Unsloth). Modul ini dipakai
+bersama di seluruh notebook eksperimen SFT agar logic mapping tetap
+konsisten dan tidak terduplikasi antar eksperimen.
 """
 
 import random
@@ -24,17 +24,26 @@ THINK_TEMPLATES = [
 
 
 def load_split_dataset(test_size: float = 0.05, seed: int = 1010):
-    """
-    Load dataset mentah dari HuggingFace, lalu split train/val.
+    """Memuat dataset mentah dari HuggingFace, lalu membagi train/val.
 
-    NOTE: dataset ini cuma punya kolom ['Unnamed: 0', 'input', 'output'] --
-    BUKAN format Alpaca standar 3-kolom (instruction/input/output). Kolom
-    'input' di sini isinya instruksi/pertanyaan itu sendiri, bukan context
-    tambahan. Kolom 'Unnamed: 0' adalah artifact index dari CSV export,
-    di-drop karena gak dipakai.
+    Catatan: dataset ini hanya memiliki kolom ['Unnamed: 0', 'input',
+    'output'] -- bukan format Alpaca standar 3-kolom
+    (instruction/input/output). Kolom 'input' di sini berisi
+    instruksi/pertanyaan itu sendiri, bukan context tambahan. Kolom
+    'Unnamed: 0' merupakan artifact index dari CSV export dan di-drop
+    karena tidak digunakan.
 
-    seed di-fix biar split konsisten & reproducible antar eksperimen
-    (supaya perbandingan hyperparameter fair -- data train/val-nya sama).
+    Seed di-fix agar split konsisten dan reproducible antar eksperimen
+    (supaya perbandingan hyperparameter fair -- data train/val sama).
+
+    Args:
+        test_size: Proporsi data yang dialokasikan ke validation split.
+        seed: Seed untuk `train_test_split`, fixed supaya split sama
+            persis di semua eksperimen hyperparameter.
+
+    Returns:
+        Tuple `(train_dataset, val_dataset)`, keduanya `datasets.Dataset`
+        dengan kolom `['input', 'output']` (kolom index CSV sudah di-drop).
     """
     dataset = load_dataset(DATASET_NAME, split="train")
     split = dataset.train_test_split(test_size=test_size, seed=seed)
@@ -46,13 +55,22 @@ def load_split_dataset(test_size: float = 0.05, seed: int = 1010):
 
 
 def build_formatting_func(tokenizer, system_prompt: str):
-    """
-    Return formatting function yang siap dipakai di dataset.map(batched=True).
+    """Mengembalikan formatting function untuk dataset.map(batched=True).
 
-    Dipisah jadi factory function (bukan formatting_func langsung) karena
-    tokenizer & system_prompt beda-beda tergantung model/eksperimen yang
-    lagi jalan -- jadi tiap notebook tinggal panggil dengan tokenizer &
-    system_prompt masing-masing.
+    Dipisah menjadi factory function (bukan formatting_func langsung)
+    karena tokenizer dan system_prompt berbeda-beda tergantung
+    model/eksperimen yang sedang berjalan -- sehingga tiap notebook
+    tinggal memanggil dengan tokenizer dan system_prompt masing-masing.
+
+    Args:
+        tokenizer: Tokenizer Unsloth/HF dengan chat template terpasang
+            (dipakai untuk `apply_chat_template`).
+        system_prompt: System prompt yang disisipkan ke tiap conversation.
+
+    Returns:
+        Fungsi `formatting_prompts_func(examples) -> dict` yang menerima
+        batch dari `Dataset.map(batched=True)` dan mengembalikan dict
+        dengan kolom `"text"` berisi hasil chat-template.
     """
 
     def formatting_prompts_func(examples):
@@ -79,11 +97,17 @@ def build_formatting_func(tokenizer, system_prompt: str):
 def prepare_datasets(
     tokenizer, system_prompt: str, test_size: float = 0.05, seed: int = 1010
 ):
-    """
-    One-call helper: load, split, dan format dataset sekaligus.
+    """Helper satu panggilan: memuat, membagi, dan memformat dataset.
 
-    Return: (train_dataset, val_dataset) -- keduanya sudah punya kolom "text"
-    siap dipakai SFTTrainer.
+    Args:
+        tokenizer: Tokenizer Unsloth/HF dengan chat template terpasang.
+        system_prompt: System prompt yang disisipkan ke tiap conversation.
+        test_size: Proporsi data yang dialokasikan ke validation split.
+        seed: Seed untuk split, diteruskan ke `load_split_dataset`.
+
+    Returns:
+        Tuple `(train_dataset, val_dataset)` -- keduanya sudah memiliki
+        kolom `"text"` siap dipakai `SFTTrainer`.
     """
     train_dataset, val_dataset = load_split_dataset(test_size=test_size, seed=seed)
     formatting_func = build_formatting_func(tokenizer, system_prompt)
@@ -95,9 +119,18 @@ def prepare_datasets(
 
 
 def extract_task_hint(instruction: str, max_words: int = 6) -> str:
-    """
-    Ambil ringkasan singkat dari instruksi untuk dipakai di <think> placeholder.
-    Heuristik: buang kata perintah umum di depan, ambil sisa kalimat pendek.
+    """Mengambil ringkasan singkat dari instruksi untuk placeholder <think>.
+
+    Heuristik: mengabaikan kata perintah umum di depan, mengambil sisa
+    kalimat pendek.
+
+    Args:
+        instruction: Teks instruksi/pertanyaan mentah (kolom `input`).
+        max_words: Jumlah kata maksimum yang diambil dari klausa pertama.
+
+    Returns:
+        Ringkasan singkat lowercase, atau `"permintaan pengguna"` sebagai
+        fallback apabila instruksi kosong setelah diproses.
     """
     instruction = instruction.strip()
     # Ambil klausa pertama sebelum newline
@@ -107,9 +140,31 @@ def extract_task_hint(instruction: str, max_words: int = 6) -> str:
     return hint.lower() if hint else "permintaan pengguna"
 
 
-def build_coldstart_example(row, tokenizer, system_prompt: str):
+def build_coldstart_example(
+    row: dict, tokenizer, system_prompt: str, rng: random.Random
+) -> dict:
+    """Membangun satu contoh cold-start dengan placeholder reasoning `<think>`.
+
+    Konten reasoning diisi dari template acak (`THINK_TEMPLATES`) yang
+    diformat menggunakan `task_hint` hasil ekstraksi dari instruksi --
+    bukan reasoning asli, hanya placeholder agar model mempelajari pola
+    format `<think>...</think>{jawaban}` sebelum memasuki tahap GRPO.
+
+    Args:
+        row: Satu baris dataset dengan kolom `input` dan `output`.
+        tokenizer: Tokenizer dengan chat template terpasang.
+        system_prompt: System prompt yang disisipkan ke conversation.
+        rng: Instance `random.Random` (bukan modul `random` global) agar
+            pemilihan template deterministic dan reproducible mengikuti
+            seed yang diteruskan dari `build_coldstart_dataset`, tanpa
+            membocorkan side effect ke global random state.
+
+    Returns:
+        Dict dengan kolom `"text"` berisi hasil chat-template lengkap
+        (system + user + assistant dengan `<think>` block).
+    """
     task_hint = extract_task_hint(row["input"])
-    think_content = random.choice(THINK_TEMPLATES).format(task_hint=task_hint)
+    think_content = rng.choice(THINK_TEMPLATES).format(task_hint=task_hint)
 
     assistant_content = f"<think>\n{think_content}\n</think>\n{row['output']}"
 
@@ -126,11 +181,35 @@ def build_coldstart_example(row, tokenizer, system_prompt: str):
 def build_coldstart_dataset(
     base_dataset, tokenizer, system_prompt: str, n_samples: int = 300, seed: int = 1010
 ) -> Dataset:
+    """Membangun subset cold-start dari `base_dataset` untuk SFT awal GRPO.
+
+    Seed dipakai untuk dua hal yang sebelumnya rawan tercampur: shuffle
+    subset dataset (`base_dataset.shuffle`) dan pemilihan template
+    `<think>` per baris (`random.choice`). Keduanya kini di-drive dari
+    seed yang sama melalui instance `random.Random` lokal, sehingga
+    seluruh proses fully reproducible tanpa menyentuh global random
+    state.
+
+    Args:
+        base_dataset: Dataset sumber (biasanya `train_dataset` dari
+            `load_split_dataset`) yang akan di-subset.
+        tokenizer: Tokenizer dengan chat template terpasang.
+        system_prompt: System prompt yang disisipkan ke tiap conversation.
+        n_samples: Jumlah sampel cold-start yang diambil, di-clip ke
+            `len(base_dataset)` apabila dataset lebih kecil.
+        seed: Seed untuk shuffle dataset maupun pemilihan template
+            `<think>` -- fixed supaya cold-start set reproducible.
+
+    Returns:
+        `Dataset` hasil map, kolom lama sudah dibuang, hanya tersisa
+        kolom `"text"` siap dipakai SFTTrainer.
+    """
+    rng = random.Random(seed)
     subset = base_dataset.shuffle(seed=seed).select(
         range(min(n_samples, len(base_dataset)))
     )
     coldstart = subset.map(
-        lambda row: build_coldstart_example(row, tokenizer, system_prompt),
+        lambda row: build_coldstart_example(row, tokenizer, system_prompt, rng),
         remove_columns=subset.column_names,
     )
     return coldstart

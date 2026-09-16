@@ -1,0 +1,43 @@
+# Core LLM / Hugging Face
+transformers==4.57.3
+accelerate==1.12.0
+bitsandbytes==0.49.1
+huggingface-hub==0.36.0
+datasets
+
+# Fine-tuning
+trl
+unsloth
+peft
+
+# Data processing & visualization
+numpy
+pandas
+matplotlib
+
+# LangChain / RAG
+langchain==1.2.3
+langchain-community==0.4.1
+langchain-core==1.2.6
+langchain-classic
+langchain-text-splitters
+langchain-huggingface
+langchain-chroma
+chromadb==1.4.1
+
+# Retrieval / Embedding
+rank-bm25
+sentence-transformers
+
+# Document processing
+pymupdf
+
+# Evaluation / NLP
+rouge-score
+langdetect
+
+# Experiment tracking
+wandb
+
+# Other
+ddgs
