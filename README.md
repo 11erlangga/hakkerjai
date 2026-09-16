@@ -1,34 +1,41 @@
-# Legal RAG SLM
+# HakKerja
 
-Fine-tuned small language model + advanced RAG pipeline for answering Indonesian
-labor-law questions grounded in official regulations (UU/PP), with citation and a
-local-first design so no sensitive document ever needs to leave the environment.
+*"Hak Kerja" is Indonesian for "labor rights."*
 
-Two components, trained and integrated end-to-end:
-1. **Fine-tuned SLM** — QLoRA SFT + GRPO reinforcement learning with custom reward
+An AI assistant that answers Indonesian labor-law questions, grounded in official
+regulations (UU/PP) and cited down to the article number. It runs on a small language
+model fine-tuned specifically for this task, paired with a retrieval pipeline over the
+actual regulation PDFs. Everything runs locally, which matters here since the
+underlying use case is confidential legal documents that can't be sent to a third-party
+API.
+
+It's built from two pieces trained and wired together end to end:
+
+1. **Fine-tuned SLM**: QLoRA SFT, then GRPO reinforcement learning with custom reward
    functions, on top of `Qwen2.5-3B-Instruct`.
-2. **RAG pipeline** — hybrid retrieval (BM25 + dense), parent-child chunking, HyDE
-   query expansion, cross-encoder reranking, and web-search fallback for out-of-scope
-   queries.
+2. **RAG pipeline**: hybrid retrieval (BM25 + dense), parent-child chunking, HyDE
+   query expansion, cross-encoder reranking, and a web-search fallback for anything
+   outside the local documents.
 
 ---
 
 ## Features
 
-- **Hybrid retrieval**: BM25 (keyword) + dense embeddings (`BAAI/bge-m3`), weighted
-  ensemble, tuned for legal text where exact term/article matches matter.
-- **Parent-child chunking**: small chunks for accurate vector search, larger parent
-  chunks for full context at generation time.
-- **Metadata-aware citation**: every retrieved chunk carries its source law
-  (`uu_number`) and article references (`pasal_refs`), surfaced directly in the answer.
-- **HyDE query expansion**: generates hypothetical answers to enrich retrieval for
-  vague or under-specified questions.
-- **Cross-encoder reranking** (`bge-reranker-base`) with relevance-score-based fallback
-  to DuckDuckGo web search when local documents don't cover the query.
-- **Custom GRPO reward shaping**: 4 reward functions covering output format,
-  reasoning-length, correctness (ROUGE-based), and language consistency.
-- **Fully local generation**: the RAG pipeline's LLM is the project's own fine-tuned
-  model, not a third-party API — required for handling confidential legal documents.
+- **Hybrid retrieval.** BM25 (keyword) and dense embeddings (`BAAI/bge-m3`) combined in
+  a weighted ensemble. Legal text leans heavily on exact terms and article numbers, so
+  keyword matching carries most of the weight.
+- **Parent-child chunking.** Small chunks for accurate vector search, larger parent
+  chunks for full context once the generator actually needs to answer.
+- **Citations by default.** Every chunk carries its source regulation (`uu_number`) and
+  article numbers (`pasal_refs`), so answers can point back to a specific `Pasal`
+  instead of just "the document."
+- **HyDE query expansion.** Generates a couple of hypothetical answers per query before
+  retrieving, which helps with vague or under-specified questions.
+- **Reranking with a fallback.** A cross-encoder (`bge-reranker-base`) reorders results,
+  and if the top score is too low the system falls back to a DuckDuckGo search instead
+  of forcing an answer out of weak local context.
+- **Custom GRPO rewards.** Four reward functions covering output format, reasoning
+  length, correctness (ROUGE-based), and language consistency.
 
 ---
 
@@ -57,12 +64,12 @@ Query ──► HyDE (optional) ──► Ensemble Retriever (BM25 + Dense) ─�
 | Layer | Choice |
 |---|---|
 | Base model | `unsloth/Qwen2.5-3B-Instruct` |
-| Fine-tuning | Unsloth + QLoRA (4-bit, double quantization) + TRL `SFTTrainer` / `GRPOTrainer` |
+| Fine-tuning | Unsloth + QLoRA (4-bit, double quantization), TRL `SFTTrainer` / `GRPOTrainer` |
 | Training data | `Ichsan2895/alpaca-gpt4-indonesian` |
 | Vector DB | ChromaDB (`langchain-chroma`) |
 | Embedding | `BAAI/bge-m3` |
-| Reranker | `BAAI/bge-reranker-base` (cross-encoder) |
-| Retrieval | LangChain (BM25Retriever + EnsembleRetriever) |
+| Reranker | `BAAI/bge-reranker-base` |
+| Retrieval | LangChain (`BM25Retriever` + `EnsembleRetriever`) |
 | Web fallback | DuckDuckGo (`ddgs`) |
 | Generation runtime | HuggingFace `transformers` (`AutoModelForCausalLM`, 4-bit) |
 | Compute | Kaggle GPU (T4/P100) |
@@ -72,82 +79,82 @@ Query ──► HyDE (optional) ──► Ensemble Retriever (BM25 + Dense) ─�
 ## Fine-Tuning: Approach & Results
 
 ### SFT (QLoRA)
-Two LoRA configurations were trained (`r=16, alpha=16` and `r=8, alpha=8`) for 1000
-steps each, with eval every 100 steps.
 
-`max_steps` was set based on a short throughput benchmark (~0.26 it/s on Kaggle
-T4/P100) rather than picked arbitrarily — enough steps for a clear loss curve
-comparison across configs, without spending the full ~6h/epoch budget twice.
+Two LoRA configs were trained, `r=16, alpha=16` and `r=8, alpha=8`, for 1000 steps
+each with eval every 100 steps. The step count itself came from a quick throughput
+benchmark (~0.26 it/s on a Kaggle T4/P100), not a guess: enough steps to get a
+readable loss curve for comparison, without burning through the full ~6h/epoch budget
+twice over.
 
-![Loss curve comparison run1 vs run2](assets/Loss Curve Comparison.png)
+![Loss curve comparison run1 vs run2](assets/loss-curve-comparison.png)
 
-**Result: `r=16, alpha=16` selected.** Eval loss ends at **1.0358** vs **1.0426** for
-`r=8` — and critically, `r=16` is lower at *every* one of the 10 checkpoints, not just
-at the final step, which is a much stronger signal than a one-off final-number
-comparison. The train/eval generalization gap is nearly identical between the two
-configs (Δ ≈ 0.0018), so the lower loss isn't coming at the cost of extra overfitting —
-both curves are still descending at step 1000, with no plateau or upward inflection.
+`r=16, alpha=16` won. Final eval loss lands at **1.0358** against **1.0426** for
+`r=8`, and it's not just the last number that favors it: `r=16` is lower at every
+single one of the 10 checkpoints, which is a much stronger signal than one lucky final
+step would be. The train/eval gap is nearly identical between the two runs (about
+0.0018 apart), so the lower loss isn't bought with extra overfitting. Neither curve has
+plateaued by step 1000 either, both are still trending down.
 
 ### GRPO (reinforcement learning)
-`GRPOTrainer` (TRL + Unsloth), 350 steps, ~4 hours on a single Kaggle GPU session, with
-4 custom reward functions (`src/reward_functions.py`):
 
-1. **`format_reward_func`** — rewards well-formed `<think>...</think>` structure,
-   penalizes malformed/duplicated reasoning tags.
-2. **`reasoning_length_reward_func`** — rewards proportionally longer reasoning content
-   (tolerant of truncation from token limits).
-3. **`correctness_reward_func`** — ROUGE-L similarity between the model's final answer
-   and the dataset's ground-truth output.
-4. **`language_reward_func`** — penalizes answers that drift into English.
+`GRPOTrainer` (TRL + Unsloth), 350 steps, about 4 hours on a single Kaggle GPU
+session. Four custom reward functions live in `src/reward_functions.py`:
+
+1. `format_reward_func`: rewards well-formed `<think>...</think>` structure, penalizes
+   malformed or duplicated reasoning tags.
+2. `reasoning_length_reward_func`: rewards proportionally longer reasoning content,
+   tolerant of truncation from the token limit.
+3. `correctness_reward_func`: ROUGE-L similarity between the model's final answer and
+   the dataset's ground-truth output.
+4. `language_reward_func`: penalizes answers that drift into English.
 
 **Calibrating the correctness threshold.** ROUGE-L is a lexical-overlap metric, so a
-low score doesn't necessarily mean a wrong answer (it could be a valid paraphrase). To
-set `ROUGE_SIMILARITY_THRESHOLD_FINAL` properly, 20 eval samples were manually reviewed
-and categorized (unanswerable/corrupted data, open-ended/ambiguous ground truth, valid
-paraphrase, genuinely wrong answer):
+low score doesn't necessarily mean the answer is wrong; it might just be phrased
+differently. To pick `ROUGE_SIMILARITY_THRESHOLD_FINAL` properly, 20 eval samples were
+manually reviewed and sorted into four buckets: unanswerable or corrupted data,
+open-ended or ambiguous ground truth, valid paraphrase, and genuinely wrong.
 
-![ROUGE-L score distribution](assets/ROUGE Distribution.png)
+![ROUGE-L score distribution](assets/rouge-distribution.png)
 
-The review focused on the 0.15–0.28 cluster, where valid paraphrases and wrong answers
-overlap in score:
+The review focused on the 0.15–0.28 range, where valid paraphrases and wrong answers
+turned out to overlap:
 
 | Score | Category | Note |
 |---|---|---|
-| 0.161 | Wrong | repetition collapse (same sentence repeated >10x) |
-| 0.186 | Valid paraphrase | CNN explanation — same concept, different terms (truncated by token limit) |
-| 0.222 | Valid paraphrase | correct core facts, minor detail error |
-| 0.231 | Wrong | explicit constraint violated (price outside requested range) |
-| 0.272 | Wrong | factual error in story content |
+| 0.161 | Wrong | repetition collapse, same sentence repeated more than 10 times |
+| 0.186 | Valid paraphrase | CNN explanation, same concept in different terms, cut short by the token limit |
+| 0.222 | Valid paraphrase | correct core facts, one minor detail wrong |
+| 0.231 | Wrong | violated an explicit constraint (price outside the requested range) |
+| 0.272 | Wrong | factual error in the story's content |
 
-Since the lowest valid-paraphrase score (0.186) and the highest wrong-answer score
-(0.272) overlap, no threshold in this range perfectly separates the two classes. The
-threshold was set to **0.2** — just below 0.186 — to avoid zeroing out valid answers,
-accepting that a small fraction of degenerate outputs (~5% of reviewed samples) may
-still receive a false-positive reward. `correctness_reward_func` is the only one of the
-4 reward signals that measures answer content, so preserving its signal for correct
-answers was prioritized over filtering out every edge case.
+The lowest valid-paraphrase score (0.186) sits below the highest wrong-answer score
+(0.272), so there's no threshold in this range that cleanly separates the two. It was
+set to **0.2**, just under 0.186, to avoid zeroing out valid answers. The trade-off is
+that a small share of degenerate outputs (about one in twenty in this review) can still
+slip through with a false-positive reward. `correctness_reward_func` is the only one of
+the four signals that actually looks at answer content, so keeping it useful for the
+majority of correct answers mattered more than catching every edge case.
 
-**Model checkpoints**: see [`link_huggingface.txt`](link_huggingface.txt).
+Model checkpoints are listed in [`link_huggingface.txt`](link_huggingface.txt).
 
 ---
 
 ## RAG System: Approach & Results
 
-- **Chunking**: parent chunks (2000/200 chars) for LLM context, child chunks (400/50)
-  for vector search — balances retrieval precision with enough context for the
-  generator to reason over.
-- **Ensemble retriever**: BM25/dense weighted 0.75/0.25. Legal text relies heavily on
-  exact terminology and article numbers, so keyword matching is weighted more heavily
-  than semantic similarity.
-- **Metadata**: each chunk carries `uu_number` (regulation number) and `pasal_refs`
-  (article numbers), extracted from the source page before splitting, enabling
-  citations in every answer without a separate lookup step.
-- **HyDE**: generates 2+ hypothetical answers per query to expand retrieval coverage
-  for vague questions, reusing the same model weights as the main generator (no extra
-  GPU memory).
-- **Reranking + fallback**: top-1 reranker score below a threshold triggers a DuckDuckGo
-  web search instead of forcing an answer from irrelevant local documents — an explicit
-  guard against hallucinating from weak context.
+- **Chunking.** Parent chunks (2000/200 chars) for LLM context, child chunks (400/50)
+  for vector search. Precise retrieval, enough context to reason over once retrieved.
+- **Ensemble retriever.** BM25 and dense weighted 0.75/0.25. Legal text depends on
+  exact terminology and article numbers more than semantic similarity, so keyword
+  search gets most of the weight.
+- **Metadata.** Each chunk carries `uu_number` and `pasal_refs`, pulled from the source
+  page before splitting, so citations come for free instead of needing a separate
+  lookup step.
+- **HyDE.** Generates two or more hypothetical answers per query to widen retrieval
+  coverage on vague questions, reusing the same model weights as the main generator so
+  there's no extra GPU cost.
+- **Reranking and fallback.** If the top reranker score comes back too low, the system
+  searches DuckDuckGo instead of answering from local context that probably doesn't
+  cover the question.
 
 ### Example
 
@@ -169,15 +176,16 @@ Sumber Referensi:
 ## Setup & Installation
 
 ```bash
-git clone https://github.com/11erlangga/legal-rag-slm.git
-cd legal-rag-slm
+git clone https://github.com/11erlangga/hak-kerja.git
+cd hak-kerja
 pip install -r requirements.txt
 ```
 
-Notebooks are designed to run on Kaggle (GPU T4/P100). Fine-tuning notebooks (`01`–`03`)
-use Unsloth; RAG notebooks (`04`–`06`) intentionally avoid Unsloth to prevent dependency
-conflicts between the Unsloth stack and the LangChain/ChromaDB stack — the RAG
-generator loads the fine-tuned checkpoint via plain HuggingFace `transformers` instead.
+Notebooks are built for Kaggle (GPU T4/P100). The fine-tuning notebooks (`01`–`03`) use
+Unsloth. The RAG notebooks (`04`–`06`) deliberately don't, to avoid dependency
+conflicts between the Unsloth stack and the LangChain/ChromaDB stack. The RAG
+generator loads the fine-tuned checkpoint through plain HuggingFace `transformers`
+instead.
 
 ```python
 from src.rag.pipeline import build_pipeline, interactive_loop
@@ -199,7 +207,7 @@ interactive_loop(pipeline)
 ## Project Structure
 
 ```
-legal-rag-slm/
+hak-kerja/
 ├── notebooks/
 │   ├── 01_sft_experiment{1,2}_*.ipynb
 │   ├── 02_model_selection_and_reward_tuning.ipynb
@@ -231,30 +239,54 @@ legal-rag-slm/
 
 ## Known Limitations & Roadmap
 
-- **Reasoning-trace consistency**: the GRPO-trained `<think>` reasoning format is
-  reliable in direct chat inference but doesn't yet generalize consistently to the
-  RAG prompt structure — likely a prompt-template mismatch between what the model saw
-  during RL training and what it sees wrapped in retrieval context. Aligning the two
-  prompt formats (or including RAG-style prompts in GRPO training) is the next planned
-  step.
-- **`fallback_threshold` is uncalibrated**: currently set to `0.0` against the
-  reranker's raw logit score, without empirical validation against in-domain vs.
-  out-of-domain query distributions. Planned: calibrate against a labeled query set.
-- **`ensemble_weights` (0.75/0.25) is a heuristic**, chosen from domain reasoning
-  (legal text favors exact keyword match) rather than a quantitative sweep.
-- **`pasal_refs` granularity is per-page**, not per-chunk — a page with multiple
+- The GRPO-trained `<think>` reasoning format holds up well in direct chat inference
+  but doesn't yet carry over consistently once wrapped in the RAG prompt. Most likely
+  cause is a mismatch between the prompt structure the model saw during RL training and
+  the one it sees with retrieval context attached. Aligning the two, or including
+  RAG-style prompts during GRPO training, is next.
+- `fallback_threshold` is currently `0.0` against the reranker's raw logit score, not
+  calibrated against real in-domain vs. out-of-domain queries yet.
+- `ensemble_weights` (0.75/0.25) came from domain reasoning, not a quantitative sweep.
+  Worth tuning once there's a labeled query set to test against.
+- `pasal_refs` are extracted per page, not per chunk, so a page covering multiple
   articles has all its chunks inherit the same article list. Finer-grained extraction
-  is a reasonable follow-up.
-- **No source-type distinction in the system prompt** between verified local documents
-  and unverified web-fallback results — worth adding given the project's goal of
-  avoiding speculative legal answers.
-- The GRPO training run did not wire in a live `eval_dataset`, to keep the run inside
-  Kaggle's session time limit and avoid OOM risk from the extra generation overhead an
-  eval loop adds on top of GRPO's already-heavy per-step sampling.
+  is a reasonable next step.
+- The system prompt doesn't yet distinguish verified local documents from unverified
+  web-fallback results. Given the whole point of this project is avoiding speculative
+  legal answers, that distinction should probably exist.
+- The GRPO run didn't wire in a live `eval_dataset`, mainly to stay within Kaggle's
+  session limit and avoid the extra OOM risk that an eval loop adds on top of GRPO's
+  already-heavy per-step sampling.
 
 ---
 
 ## Model Links
 
-See [`link_huggingface.txt`](link_huggingface.txt) for SFT and GRPO checkpoints on
-Hugging Face Hub.
+SFT and GRPO checkpoints are on Hugging Face Hub, listed in
+[`link_huggingface.txt`](link_huggingface.txt).
+
+---
+
+## Background
+
+This project started as the final assignment for Dicoding's *Pengembangan Generative AI
+Berbasis LLM* course. It's since turned into an ongoing space to practice fine-tuning
+and RAG techniques beyond what the original coursework asked for.
+
+## Acknowledgments
+
+Parts of the implementation were adapted from patterns in:
+
+- [`athina-ai/rag-cookbooks`](https://github.com/athina-ai/rag-cookbooks), referenced
+  for the HyDE implementation.
+- [`unslothai/notebooks`](https://github.com/unslothai/notebooks), referenced for the
+  GRPO training setup.
+- [How to Train Your LLM to Reason (GRPO) Reinforcement Learning using Unsloth](https://medium.com/mitb-for-all/how-to-train-your-llm-to-reason-grpo-reinforcement-learning-using-unsloth-64af5e82ac3c)
+- [Advanced RAG: Improving Retrieval using Hypothetical Document Embeddings (HyDE)](https://medium.aiplanet.com/advanced-rag-improving-retrieval-using-hypothetical-document-embeddings-hyde-1421a8ec075a)
+
+## Feedback & Discussion
+
+This is an active learning project, not a finished product. If something looks wrong,
+you know a better approach, or you just want to dig into any of the methods here
+(reward shaping, retrieval strategy, whatever), open an issue or start a discussion.
+Questions and criticism are genuinely welcome.
