@@ -89,11 +89,10 @@ twice over.
 ![Loss curve comparison run1 vs run2](assets/loss-curve-comparison.png)
 
 `r=16, alpha=16` won. Final eval loss lands at **1.0358** against **1.0426** for
-`r=8`, and it's not just the last number that favors it: `r=16` is lower at every
-single one of the 10 checkpoints, which is a much stronger signal than one lucky final
-step would be. The train/eval gap is nearly identical between the two runs (about
-0.0018 apart), so the lower loss isn't bought with extra overfitting. Neither curve has
-plateaued by step 1000 either, both are still trending down.
+`r=8`. `r=16` is lower at every single one of the 10 checkpoints, a stronger signal
+than the final number alone. The train/eval gap is nearly identical between the two
+runs (about 0.0018 apart), so the lower loss isn't bought with extra overfitting.
+Neither curve has plateaued by step 1000, both are still trending down.
 
 ### GRPO (reinforcement learning)
 
@@ -128,12 +127,13 @@ turned out to overlap:
 | 0.272 | Wrong | factual error in the story's content |
 
 The lowest valid-paraphrase score (0.186) sits below the highest wrong-answer score
-(0.272), so there's no threshold in this range that cleanly separates the two. It was
-set to **0.2**, just under 0.186, to avoid zeroing out valid answers. The trade-off is
-that a small share of degenerate outputs (about one in twenty in this review) can still
-slip through with a false-positive reward. `correctness_reward_func` is the only one of
-the four signals that actually looks at answer content, so keeping it useful for the
-majority of correct answers mattered more than catching every edge case.
+(0.272), so there's no threshold in this range that cleanly separates the two.
+`correctness_reward_func` is the only one of the four signals that actually looks at
+answer content, so keeping it useful for the majority of correct answers mattered more
+than catching every edge case. The threshold was set to **0.2**, just under 0.186, to
+avoid zeroing out valid answers. The trade-off is that a small share of degenerate
+outputs (about one in twenty in this review) can still slip through with a
+false-positive reward.
 
 Model checkpoints are listed in [`link_huggingface.txt`](link_huggingface.txt).
 
@@ -168,7 +168,7 @@ gaji jika sudah bekerja lebih dari setahun di suatu perusahaan.
 Sumber Referensi:
 - PP No. 51 Tahun 2023, halaman 16
 - PP No. 35 Tahun 2021, halaman 25
-- PP No. 51 Tahun 2023, halaman 1 — Pasal: 23, 24, 25
+- PP No. 51 Tahun 2023, halaman 1, Pasal: 23, 24, 25
 ```
 
 ---
@@ -191,7 +191,7 @@ instead.
 from src.rag.pipeline import build_pipeline, interactive_loop
 
 pipeline = build_pipeline(
-    pdf_dir=PDF_DIR,
+    pdf_dir=PDF_DIR,  # path to your folder of regulation PDFs, e.g. "./data/regulations"
     hf_repo_id="11erlangga/grpo-qwen25-3b",
     ensemble_weights=(0.75, 0.25),
     use_hyde=True,
