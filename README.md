@@ -1,4 +1,4 @@
-# HakKerja
+# HakKerjAI
 
 *"Hak Kerja" is Indonesian for "labor rights."*
 
